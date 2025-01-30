@@ -32,18 +32,58 @@ else
   echo "Detected hash type: $hash_type"
 fi
 
+# Define hash types that require a separate salt
+SALT_REQUIRED_TYPES=("131" "132" "133" "134" "135" "200" "300" "7400" "7410" "7420" "14300" "14400" "1710" "9900" "12" "130" "22000" "8900" "13200" "8200" "19100")
+
+# Check if the detected hash type requires a separate salt
+needs_salt=false
+for salt_type in "${SALT_REQUIRED_TYPES[@]}"; do
+  if [ "$hash_type" == "$salt_type" ]; then
+    needs_salt=true
+    break
+  fi
+done
+
+# Prompt for salt if needed
+if [ "$needs_salt" == true ]; then
+  read -p "This hash type requires a salt. Please enter the salt: " salt
+fi
+
 # Prompt for password length
-read -p "If you know the password length, enter the number of characters (or press Enter to skip): " pwd_length
+read -p "If you know the password length, enter the number of characters or a range (e.g., 9-12) (or press Enter to skip): " pwd_length
 
 # Create a temporary file to store the hash
 temp_hash_file=$(mktemp)
-echo "$hash" > "$temp_hash_file"
+if [ -n "$salt" ]; then
+  echo "$hash:$salt" > "$temp_hash_file"
+else
+  echo "$hash" > "$temp_hash_file"
+fi
+
+# Function to filter dictionary file by length or range
+filter_dict_file() {
+  local length=$1
+  local dict_file=$2
+  local filtered_file=$3
+
+  if [[ "$length" =~ ^[0-9]+-[0-9]+$ ]]; then
+    # Length range provided (e.g., 9-12)
+    local min_length=$(echo $length | cut -d'-' -f1)
+    local max_length=$(echo $length | cut -d'-' -f2)
+    grep -E "^.{$min_length,$max_length}$" "$dict_file" > "$filtered_file"
+  elif [[ "$length" =~ ^[0-9]+$ ]]; then
+    # Single length provided (e.g., 10)
+    grep -E "^.{$length}$" "$dict_file" > "$filtered_file"
+  else
+    cp "$dict_file" "$filtered_file"
+  fi
+}
 
 # Crack the hash with hashcat using rule-based attacks
 if [ -n "$pwd_length" ]; then
-  # Filter the dictionary file for passwords with the specified length
+  # Filter the dictionary file for passwords with the specified length or range
   filtered_dict_file=$(mktemp)
-  grep -E "^.{${pwd_length}}$" "$DICT_FILE" > "$filtered_dict_file"
+  filter_dict_file "$pwd_length" "$DICT_FILE" "$filtered_dict_file"
 
   hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $temp_hash_file $filtered_dict_file"
   hashcat_output=$(eval $hashcat_command)
