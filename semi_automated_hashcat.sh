@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Path to your dictionary file
+# Path to your dictionary file and rules file
 DICT_FILE="rockyou.txt"
+RULES_FILE="/usr/share/hashcat/rules/best64.rule"
 
 # Prompt for hash
 read -p "Please paste the hash you want to crack: " hash
@@ -38,19 +39,19 @@ read -p "If you know the password length, enter the number of characters (or pre
 temp_hash_file=$(mktemp)
 echo "$hash" > "$temp_hash_file"
 
-# Crack the hash with hashcat
+# Crack the hash with hashcat using rule-based attacks
 if [ -n "$pwd_length" ]; then
   # Filter the dictionary file for passwords with the specified length
   filtered_dict_file=$(mktemp)
-  awk -v len="$pwd_length" 'length($0) == len' "$DICT_FILE" > "$filtered_dict_file"
+  grep -E "^.{${pwd_length}}$" "$DICT_FILE" > "$filtered_dict_file"
 
-  hashcat_command="hashcat -m $hash_type -a 0 -w 4 $temp_hash_file $filtered_dict_file"
+  hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $temp_hash_file $filtered_dict_file"
   hashcat_output=$(eval $hashcat_command)
 
   # Clean up the filtered dictionary file
   rm "$filtered_dict_file"
 else
-  hashcat_command="hashcat -m $hash_type -a 0 -w 4 $temp_hash_file $DICT_FILE"
+  hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $temp_hash_file $DICT_FILE"
   hashcat_output=$(eval $hashcat_command)
 fi
 
