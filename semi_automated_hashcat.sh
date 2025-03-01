@@ -4,8 +4,71 @@
 DICT_FILE="rockyou.txt"
 RULES_FILE="/usr/share/hashcat/rules/best64.rule"
 
-# Prompt for hash
-read -p "Please paste the hash you want to crack: " hash
+# Helper function to display a help message
+display_help() {
+  echo "Usage: $0 [options]"
+  echo ""
+  echo "Options:"
+  echo "  -h, --help              Show this help message"
+  echo "  -d, --dict-file FILE    Path to the dictionary file (default: rockyou.txt)"
+  echo "  -r, --rules-file FILE   Path to the rules file (default: /usr/share/hashcat/rules/best64.rule)"
+  echo "  -H, --hash HASH         The hash you want to crack"
+  echo "  -m, --mode MODE         Hashcat mode to use"
+  echo "  -p, --pwd-length LEN    Password length or range (e.g., 9-12)"
+  echo "  -s, --salt SALT         Salt value for hash types requiring a salt"
+  exit 0
+}
+
+# Default values
+DICT_FILE="rockyou.txt"
+RULES_FILE="/usr/share/hashcat/rules/best64.rule"
+hash=""
+manual_mode=""
+pwd_length=""
+salt=""
+
+# Parse command-line arguments
+while [[ "$1" != "" ]]; do
+  case $1 in
+    -h | --help )
+      display_help
+      ;;
+    -d | --dict-file )
+      shift
+      DICT_FILE="$1"
+      ;;
+    -r | --rules-file )
+      shift
+      RULES_FILE="$1"
+      ;;
+    -H | --hash )
+      shift
+      hash="$1"
+      ;;
+    -m | --mode )
+      shift
+      manual_mode="$1"
+      ;;
+    -p | --pwd-length )
+      shift
+      pwd_length="$1"
+      ;;
+    -s | --salt )
+      shift
+      salt="$1"
+      ;;
+    * )
+      echo "Unknown option: $1"
+      display_help
+      ;;
+  esac
+  shift
+done
+
+# Prompt for hash if not provided
+if [ -z "$hash" ]; then
+  read -p "Please paste the hash you want to crack: " hash
+fi
 
 # Check if hash provided
 if [ -z "$hash" ]; then
@@ -13,24 +76,24 @@ if [ -z "$hash" ]; then
   exit 1
 fi
 
-# Auto-detect hash type
-hash_type=$(hashid -m "$hash" | head -n 1 | awk -F: '{print $2}' | xargs)
+# Run hashid and show the output
+echo "Running hashid to detect hash type..."
+hashid_output=$(hashid -m "$hash")
+echo "Hashid output:"
+echo "$hashid_output"
 
-# Handle unknown hash type
-if [ -z "$hash_type" ]; then
-  echo "Warning: Could not auto-detect hash type. Hashid output: $(hashid -m "$hash")"
+# Ask for the mode
+read -p "Please enter the hashcat mode (-m value) from the hashid output (or press Enter to auto-detect): " manual_mode
 
-  # Prompt for manual mode input
-  read -p "Please enter the hashcat mode (-m value) from the hashid output: " manual_mode
-  while [[ ! "$manual_mode" =~ ^[0-9]+$ ]]; do
-    echo "Invalid mode. Please enter a number."
-    read -p "Please enter the hashcat mode (-m value) from the hashid output: " manual_mode
-  done
-  hash_type="$manual_mode"
-  echo "Using manual hash mode: $hash_type"
+# Auto-detect hash type if not provided
+if [ -z "$manual_mode" ]; then
+  hash_type=$(echo "$hashid_output" | grep -o 'Hashcat Mode: [0-9]*' | awk '{print $3}' | head -n 1)
 else
-  echo "Detected hash type: $hash_type"
+  hash_type="$manual_mode"
 fi
+
+# Debugging output
+echo "Using hashcat mode: $hash_type"
 
 # Define hash types that require a separate salt
 SALT_REQUIRED_TYPES=("131" "132" "133" "134" "135" "200" "300" "7400" "7410" "7420" "14300" "14400" "1710" "9900" "12" "130" "22000" "8900" "13200" "8200" "19100")
@@ -44,13 +107,15 @@ for salt_type in "${SALT_REQUIRED_TYPES[@]}"; do
   fi
 done
 
-# Prompt for salt if needed
-if [ "$needs_salt" == true ]; then
+# Prompt for salt if needed and not provided
+if [ "$needs_salt" == true ] && [ -z "$salt" ]; then
   read -p "This hash type requires a salt. Please enter the salt: " salt
 fi
 
-# Prompt for password length
-read -p "If you know the password length, enter the number of characters or a range (e.g., 9-12) (or press Enter to skip): " pwd_length
+# Prompt for password length if not provided
+if [ -z "$pwd_length" ]; then
+  read -p "If you know the password length, enter the number of characters or a range (e.g., 9-12) (or press Enter to skip): " pwd_length
+fi
 
 # Create a temporary file to store the hash
 temp_hash_file=$(mktemp)
@@ -114,6 +179,9 @@ if [ -n "$cracked_password" ]; then
 else
   echo "Password not found."
 fi
+
+# Display the full assembled hashcat command line used
+echo "Full hashcat command line used: hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $(cat $temp_hash_file) $DICT_FILE"
 
 # Clean up temporary file
 rm "$temp_hash_file"
