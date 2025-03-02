@@ -9,23 +9,23 @@ display_help() {
   echo "Usage: $0 [options]"
   echo ""
   echo "Options:"
-  echo "  -h, --help              Show this help message"
-  echo "  -d, --dict-file FILE    Path to the dictionary file (default: rockyou.txt)"
-  echo "  -r, --rules-file FILE   Path to the rules file (default: /usr/share/hashcat/rules/best64.rule)"
-  echo "  -H, --hash HASH         The hash you want to crack"
-  echo "  -m, --mode MODE         Hashcat mode to use"
-  echo "  -p, --pwd-length LEN    Password length or range (e.g., 9-12)"
-  echo "  -s, --salt SALT         Salt value for hash types requiring a salt"
+  echo "  -h, --help            Show this help message"
+  echo "  -d, --dict-file FILE  Path to the dictionary file (default: rockyou.txt)"
+  echo "  -r, --rules-file FILE Path to the rules file (default: /usr/share/hashcat/rules/best64.rule)"
+  echo "  -H, --hash HASH       The hash you want to crack"
+  echo "  -m, --mode MODE       Hashcat mode to use"
+  echo "  -p, --pwd-length LEN  Password length (or press Enter to skip)"
+  echo "  -s, --salt SALT       Salt value for hash types requiring a salt"
+  echo "  -n, --numeric-only    Indicates if the password is numeric only (for brute force)"
   exit 0
 }
 
 # Default values
-DICT_FILE="rockyou.txt"
-RULES_FILE="/usr/share/hashcat/rules/best64.rule"
 hash=""
 manual_mode=""
 pwd_length=""
 salt=""
+numeric_only=false
 
 # Parse command-line arguments
 while [[ "$1" != "" ]]; do
@@ -53,6 +53,9 @@ while [[ "$1" != "" ]]; do
       shift
       pwd_length="$1"
       ;;
+    -n | --numeric-only )
+      numeric_only=true
+      ;;
     -s | --salt )
       shift
       salt="$1"
@@ -76,6 +79,17 @@ if [ -z "$hash" ]; then
   exit 1
 fi
 
+# Prompt for password length if not provided
+if [ -z "$pwd_length" ]; then
+  read -p "If you know the password length, enter the number of characters (or press Enter to skip): " pwd_length
+fi
+
+# Ask if the password is numeric-only
+read -p "Is the password numeric only? (y/n): " numeric_response
+if [[ "$numeric_response" =~ ^[Yy]$ ]]; then
+  numeric_only=true
+fi
+
 # Run hashid and show the output
 echo "Running hashid to detect hash type..."
 hashid_output=$(hashid -m "$hash")
@@ -95,95 +109,104 @@ fi
 # Debugging output
 echo "Using hashcat mode: $hash_type"
 
-# Define hash types that require a separate salt
-SALT_REQUIRED_TYPES=("131" "132" "133" "134" "135" "200" "300" "7400" "7410" "7420" "14300" "14400" "1710" "9900" "12" "130" "22000" "8900" "13200" "8200" "19100")
+# Define hash types that require a separate salt (and how they use it)
+SALT_REQUIRED_TYPES=(
+    "131:salt:hash"       # Example: MD5 with salt:hash
+    "132:salt:hash"       # Example: MD5-Crypt with salt:hash
+    "1450:key:hash"       # HMAC-SHA1 (key is the entire salt)
+    "150:key:password"    # HMAC-SHA1 (key is prepended to the password)
+    "16500:key_hex:hash"  # HMAC-SHA1-HEX (key is hex-encoded)
+)
 
-# Check if the detected hash type requires a separate salt
+# Check if salt is needed and how to use it
 needs_salt=false
+salt_format=""
 for salt_type in "${SALT_REQUIRED_TYPES[@]}"; do
-  if [ "$hash_type" == "$salt_type" ]; then
-    needs_salt=true
-    break
-  fi
+    parts=(${salt_type//:/ }) # Split string by ':'
+    if [[ "$hash_type" == "${parts[0]}" ]]; then
+        needs_salt=true
+        salt_format="${parts[1]}"
+        break
+    fi
 done
 
-# Prompt for salt if needed and not provided
-if [ "$needs_salt" == true ] && [ -z "$salt" ]; then
-  read -p "This hash type requires a salt. Please enter the salt: " salt
+# Prompt for salt/key if needed
+if [ "$needs_salt" == true ]; then
+    if [ -z "$salt" ]; then
+        if [[ "$hash_type" == "16500" ]]; then
+            read -p "This is HMAC-SHA1-HEX. Please enter the HEX-encoded key: " salt
+        else
+            read -p "This hash type requires a salt/key. Please enter it: " salt
+        fi
+    fi
+    if [ -z "$salt" ]; then
+        echo "Error: No salt/key provided for $hash_type."
+        exit 1
+    fi
 fi
 
-# Prompt for password length if not provided
-if [ -z "$pwd_length" ]; then
-  read -p "If you know the password length, enter the number of characters or a range (e.g., 9-12) (or press Enter to skip): " pwd_length
-fi
-
-# Create a temporary file to store the hash
-temp_hash_file=$(mktemp)
-if [ -n "$salt" ]; then
-  echo "$hash:$salt" > "$temp_hash_file"
-else
-  echo "$hash" > "$temp_hash_file"
-fi
-
-# Function to filter dictionary file by length or range
-filter_dict_file() {
-  local length=$1
-  local dict_file=$2
-  local filtered_file=$3
-
-  if [[ "$length" =~ ^[0-9]+-[0-9]+$ ]]; then
-    # Length range provided (e.g., 9-12)
-    local min_length=$(echo $length | cut -d'-' -f1)
-    local max_length=$(echo $length | cut -d'-' -f2)
-    grep -E "^.{$min_length,$max_length}$" "$dict_file" > "$filtered_file"
-  elif [[ "$length" =~ ^[0-9]+$ ]]; then
-    # Single length provided (e.g., 10)
-    grep -E "^.{$length}$" "$dict_file" > "$filtered_file"
+# Handle numeric brute force if specified
+if [ "$numeric_only" == true ]; then
+  if [[ "$pwd_length" =~ ^[0-9]+$ ]]; then
+    echo "Performing brute force attack for a numeric password of $pwd_length digits..."
+    mask=$(printf '?d%.0s' $(seq 1 $pwd_length))  # Generate mask with ?d repeated pwd_length times
   else
-    cp "$dict_file" "$filtered_file"
+    echo "Performing brute force attack for numeric passwords (defaulting to length range 1-12)..."
+    mask="?d?d?d?d?d?d?d?d?d?d?d?d"  # Broad numeric brute force mask
   fi
-}
+  brute_force_command="hashcat -m $hash_type -a 3 -w 4 '$hash:$salt' $mask"
+  echo "Full brute force command line: $brute_force_command"
+  eval "$brute_force_command"
+  brute_force_exit_code=$?
 
-# Crack the hash with hashcat using rule-based attacks
-if [ -n "$pwd_length" ]; then
-  # Filter the dictionary file for passwords with the specified length or range
-  filtered_dict_file=$(mktemp)
-  filter_dict_file "$pwd_length" "$DICT_FILE" "$filtered_dict_file"
+  if [ $brute_force_exit_code -ne 0 ]; then
+      echo "Error: Hashcat failed during brute force. Check output above for details."
+      exit 1
+  fi
 
-  hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $temp_hash_file $filtered_dict_file"
-  hashcat_output=$(eval $hashcat_command)
+  # Check for cracked password
+  cracked_password=$(hashcat --show -m $hash_type <<< "$hash:$salt" | awk -F: '{print $2}')
 
-  # Clean up the filtered dictionary file
-  rm "$filtered_dict_file"
-else
-  hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $temp_hash_file $DICT_FILE"
-  hashcat_output=$(eval $hashcat_command)
+  if [ -n "$cracked_password" ]; then
+      echo "Hash cracked via brute force!"
+      echo "Password: $cracked_password"
+  else
+      echo "Password not found with brute force."
+  fi
+  exit 0
 fi
 
-# Check hashcat exit code
+# Dictionary-based attack if not numeric
+echo "Performing dictionary attack..."
+if [ "$needs_salt" == true ]; then
+    if [[ "$hash_type" == "16500" ]]; then
+        hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 '$salt:$hash' $DICT_FILE"
+    elif [[ "$hash_type" == "150" ]]; then
+        hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 '$hash:$salt' $DICT_FILE"
+    else
+        hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 '$salt:$hash' $DICT_FILE"
+    fi
+else
+    hashcat_command="hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 '$hash' $DICT_FILE"
+fi
+
+echo "Full dictionary attack command line: $hashcat_command"
+eval "$hashcat_command"
 hashcat_exit_code=$?
+
 if [ $hashcat_exit_code -ne 0 ]; then
-  echo "Error: hashcat exited with code $hashcat_exit_code. Check hashcat output for details."
-  echo "$hashcat_output"  # Print hashcat output for debugging
-  rm "$temp_hash_file"  # Clean up temporary file
+  echo "Error: Hashcat failed during dictionary attack. Check output above for details."
   exit 1
 fi
 
-# Parse hashcat output
-cracked_password=$(hashcat --show -m $hash_type $temp_hash_file | awk -F: '{print $2}')
+# Check for cracked password
+cracked_password=$(hashcat --show -m $hash_type <<< "$hash:$salt" | awk -F: '{print $2}')
 
-# Display results
 if [ -n "$cracked_password" ]; then
-  echo "Hash cracked!"
-  echo "Password: $cracked_password"
+    echo "Hash cracked!"
+    echo "Password: $cracked_password"
 else
-  echo "Password not found."
+    echo "Password not found with dictionary attack."
 fi
-
-# Display the full assembled hashcat command line used
-echo "Full hashcat command line used: hashcat -m $hash_type -a 0 -r $RULES_FILE -w 4 $(cat $temp_hash_file) $DICT_FILE"
-
-# Clean up temporary file
-rm "$temp_hash_file"
 
 exit 0
